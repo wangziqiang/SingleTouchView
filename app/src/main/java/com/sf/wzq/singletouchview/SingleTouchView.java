@@ -14,8 +14,11 @@ import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.Drawable;
 import android.util.AttributeSet;
 import android.util.DisplayMetrics;
+import android.util.FloatMath;
 import android.util.TypedValue;
+import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewGroup;
 
 import java.util.Arrays;
 import java.util.Collections;
@@ -35,7 +38,7 @@ public class SingleTouchView extends View {
      */
     public static final float MIN_SCALE = 0.3f;
     /**
-     * 控制缩放，旋转图标所在的四个点的位置
+     * 控制(缩放，旋转)图标所在的四个点的位置
      */
     public static final int LEFT_TOP = 0;
     public static final int RIGHT_TOP = 1;
@@ -54,7 +57,7 @@ public class SingleTouchView extends View {
     public static final int DEFAULT_OTHER_DRAWABLE_WIDTH = 50;
     public static final int DEFAULT_OTHER_DRAWABLE_HEIGHT = 50;
     /**
-     * 用于平移旋转缩放的Bitmap
+     * 用于平移/旋转/缩放的Bitmap
      */
     private Bitmap mBitmap;
     /**
@@ -62,7 +65,7 @@ public class SingleTouchView extends View {
      */
     private PointF mCenterPoint = new PointF();
     /**
-     * View的宽度和高度，随着图片的旋转而变化(不包括控制旋转，缩放图片的宽高)
+     * View的宽度和高度，随着图片的旋转而变化(不包括控制图标的宽高)
      */
     private int mViewWidth, mViewHeight;
     /**
@@ -86,22 +89,22 @@ public class SingleTouchView extends View {
      */
     private int mViewPaddingTop;
     /**
-     * 图片的四个点坐标
+     * 图片的四个角的点坐标
      */
     private Point mLTPoint;
     private Point mRTPoint;
     private Point mRBPoint;
     private Point mLBPoint;
     /**
-     * 用于缩放，旋转的控制点的坐标
+     * 用于缩放，旋转的控制图标的中心点，值为图片四个角坐标中的一个。
      */
     private Point mControlPoint = new Point();
     /**
-     * 用于缩放旋转的图标
+     * 用于缩放旋转的控制图标
      */
     private Drawable controlDrawable;
     /**
-     * 缩放旋转图标的宽和高
+     * 控制(缩放旋转)图标的宽和高
      */
     private int mDrawableWidth, mDrawableHeight;
     /**
@@ -159,6 +162,7 @@ public class SingleTouchView extends View {
      * 控制图标所在的位置(左上，右上，左下，右下）
      */
     private int controlLocation = DEFAULT_CONTROL_LOCATION;
+
     private DisplayMetrics metrics;
 
     public SingleTouchView(Context context) {
@@ -239,8 +243,151 @@ public class SingleTouchView extends View {
         mDrawableWidth = controlDrawable.getIntrinsicWidth();
         mDrawableHeight = controlDrawable.getIntrinsicHeight();
 
-        // TODO transformDraw();
         transformDraw();
+    }
+
+    @Override
+    protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
+        System.out.println("method -- onMeasure");
+        super.onMeasure(widthMeasureSpec, heightMeasureSpec);
+
+        // 获取SingleTouchView所在父布局的中心点，设置为mCenterPoint
+        ViewGroup parent = (ViewGroup) getParent();
+        if (parent != null) {
+            int width = parent.getWidth();
+            int height = parent.getHeight();
+            System.out.println("onMeasure -- mCenterPoint.x = "+width+"; mCenterPoint.y ="+height);
+            mCenterPoint.set(width / 2, height / 2);
+        }
+    }
+
+    /**
+     * 调整View的大小，位置
+     */
+    private void adjustLayout() {
+        int actualWidth = mViewWidth + mDrawableWidth;
+        int actualHeight = mViewHeight + mDrawableHeight;
+
+        int newPaddingLeft = (int) (mCenterPoint.x - actualWidth / 2);
+        int newPaddingTop = (int) (mCenterPoint.y - actualHeight / 2);
+
+        if (mViewPaddingLeft != newPaddingLeft || mViewPaddingTop != newPaddingTop) {
+
+            mViewPaddingLeft = newPaddingLeft;
+            mViewPaddingTop = newPaddingTop;
+
+            System.out.println("View的 L = " + newPaddingLeft + "; T = " + newPaddingTop + "; R = " + newPaddingLeft + actualWidth + "; B = " + newPaddingTop + actualHeight);
+            layout(newPaddingLeft, newPaddingTop, newPaddingLeft + actualWidth, newPaddingTop + actualHeight);
+        }
+    }
+
+    @Override
+    protected void onDraw(Canvas canvas) {
+
+        // 每次画之前调整位置和大小
+        adjustLayout();
+
+        super.onDraw(canvas);
+
+        if (mBitmap == null) return;
+        canvas.drawBitmap(mBitmap, matrix, null);
+
+        //处于编辑状态太画边框和控制图标
+        if (isEditable) {
+            // 1,画边框
+            mPath.reset();
+            mPath.moveTo(mLTPoint.x, mLTPoint.y);
+            mPath.lineTo(mRTPoint.x, mRTPoint.y);
+            mPath.lineTo(mRBPoint.x, mRBPoint.y);
+            mPath.lineTo(mLBPoint.x, mLBPoint.y);
+            mPath.lineTo(mLTPoint.x, mLTPoint.y);
+            canvas.drawPath(mPath, mPaint);
+            // 2,画控制图标
+            controlDrawable.setBounds(mControlPoint.x - mDrawableWidth / 2, mControlPoint.y - mDrawableHeight / 2,
+                    mControlPoint.x + mDrawableWidth / 2, mControlPoint.y + mDrawableHeight / 2);
+            controlDrawable.draw(canvas);
+        }
+
+    }
+
+    @Override
+    public boolean onTouchEvent(MotionEvent event) {
+        if(!isEditable) return super.onTouchEvent(event);
+        switch(event.getAction()){
+            case MotionEvent.ACTION_DOWN:
+                mPreMovePointF.set(event.getX() + mViewPaddingLeft,event.getY() + mViewPaddingTop);
+                mStatus = judgeStatus(event.getX(), event.getY());
+                break;
+            case MotionEvent.ACTION_UP:
+                mStatus = STATUS_INIT;
+                break;
+            case MotionEvent.ACTION_MOVE:
+                mCurMovePointF.set(event.getX() + mViewPaddingLeft,event.getY() + mViewPaddingTop);
+                if(mStatus == STATUS_DRAG){
+                    // 修改中心点
+                    mCenterPoint.x += mCurMovePointF.x - mPreMovePointF.x;
+                    mCenterPoint.y += mCurMovePointF.y - mPreMovePointF.y;
+
+                    adjustLayout();
+                }else if(mStatus == STATUS_ROTATE_ZOOM){
+                    float scale = 1f;
+
+                    int halfBitmapWidth = mBitmap.getWidth() / 2;
+                    int halfBitmapHeight = mBitmap.getHeight() /2 ;
+
+                    //图片某个点到图片中心的距离
+                    float bitmapToCenterDistance = FloatMath.sqrt(halfBitmapWidth * halfBitmapWidth + halfBitmapHeight * halfBitmapHeight);
+
+                    //移动的点到图片中心的距离
+                    float moveToCenterDistance = distance4PointF(mCenterPoint, mCurMovePointF);
+
+                    //计算缩放比例
+                    scale = moveToCenterDistance / bitmapToCenterDistance;
+
+                    //缩放比例的界限判断
+                    if (scale <= MIN_SCALE) {scale = MIN_SCALE;}
+                    else if (scale >= MAX_SCALE) {scale = MAX_SCALE;}
+
+                    // 角度
+                    double a = distance4PointF(mCenterPoint, mPreMovePointF);
+                    double b = distance4PointF(mPreMovePointF, mCurMovePointF);
+                    double c = distance4PointF(mCenterPoint, mCurMovePointF);
+
+                    double cosb = (a * a + c * c - b * b) / (2 * a * c);
+
+                    if (cosb >= 1) {
+                        cosb = 1f;
+                    }
+
+                    double radian = Math.acos(cosb);
+                    float newDegree = (float) radianToDegree(radian);
+
+                    //center -> proMove的向量， 我们使用PointF来实现
+                    PointF centerToProMove = new PointF((mPreMovePointF.x - mCenterPoint.x), (mPreMovePointF.y - mCenterPoint.y));
+
+                    //center -> curMove 的向量
+                    PointF centerToCurMove = new PointF((mCurMovePointF.x - mCenterPoint.x), (mCurMovePointF.y - mCenterPoint.y));
+
+                    //向量叉乘结果, 如果结果为负数， 表示为逆时针， 结果为正数表示顺时针
+                    float result = centerToProMove.x * centerToCurMove.y - centerToProMove.y * centerToCurMove.x;
+
+                    if (result < 0) {
+                        newDegree = -newDegree;
+                    }
+
+                    mDegree = mDegree + newDegree;
+                    mScale = scale;
+
+                    transformDraw();
+                }
+                mPreMovePointF.set(mCurMovePointF);
+                break;
+        }
+        return  true;
+    }
+
+    private double radianToDegree(double radian) {
+        return radian * 180 / Math.PI;
     }
 
     /**
@@ -253,11 +400,11 @@ public class SingleTouchView extends View {
         computeRect(-framePadding, -framePadding, bitmapWidth + framePadding, bitmapHeight + framePadding, mDegree);
 
         // 设置缩放比例
-        matrix.setScale(mScale,mScale);
+        matrix.setScale(mScale, mScale);
         // 绕着图片中心进行旋转
-        matrix.postRotate(mDegree / 360,bitmapWidth / 2,bitmapHeight / 2);
+        matrix.postRotate(mDegree / 360, bitmapWidth / 2, bitmapHeight / 2);
         // 设置画该图片的起始点
-        matrix.postTranslate(offsetX + mDrawableWidth / 2,offsetY + mDrawableHeight / 2);
+        matrix.postTranslate(offsetX + mDrawableWidth / 2, offsetY + mDrawableHeight / 2);
 
         invalidate();
     }
@@ -277,7 +424,7 @@ public class SingleTouchView extends View {
         Point rb = new Point(right, bottom);
         Point lb = new Point(left, bottom);
         Point cp = new Point((left + right) / 2, (top + bottom) / 2);
-        // 获取旋转degree角度后的点 TODO
+        // 获取旋转degree角度后的点
         mLTPoint = obtainRotationPoint(cp, lt, degree);
         mRTPoint = obtainRotationPoint(cp, rt, degree);
         mRBPoint = obtainRotationPoint(cp, rb, degree);
@@ -285,16 +432,15 @@ public class SingleTouchView extends View {
 
         //计算X坐标最大的值和最小的值
         int maxCoordinateX = getMaxValue(mLTPoint.x, mRTPoint.x, mRBPoint.x, mLBPoint.x);
-        int minCoordinateX = getMinValue(mLTPoint.x, mRTPoint.x, mRBPoint.x, mLBPoint.x);;
+        int minCoordinateX = getMinValue(mLTPoint.x, mRTPoint.x, mRBPoint.x, mLBPoint.x);
 
-        mViewWidth = maxCoordinateX - minCoordinateX ;
-
+        mViewWidth = maxCoordinateX - minCoordinateX;
 
         //计算Y坐标最大的值和最小的值
         int maxCoordinateY = getMaxValue(mLTPoint.y, mRTPoint.y, mRBPoint.y, mLBPoint.y);
         int minCoordinateY = getMinValue(mLTPoint.y, mRTPoint.y, mRBPoint.y, mLBPoint.y);
 
-        mViewHeight = maxCoordinateY - minCoordinateY ;
+        mViewHeight = maxCoordinateY - minCoordinateY;
 
 
         //View中心点的坐标
@@ -304,9 +450,8 @@ public class SingleTouchView extends View {
         offsetY = mViewHeight / 2 - viewCenterPoint.y;
 
 
-
         int halfDrawableWidth = mDrawableWidth / 2;
-        int halfDrawableHeight = mDrawableHeight /2;
+        int halfDrawableHeight = mDrawableHeight / 2;
 
         //将Bitmap的四个点的X的坐标移动offsetX + halfDrawableWidth
         mLTPoint.x += (offsetX + halfDrawableWidth);
@@ -326,11 +471,6 @@ public class SingleTouchView extends View {
 
     /**
      * 获取一个点旋转degree角度后的点
-     *
-     * @param center
-     * @param source
-     * @param degree
-     * @return
      */
     private Point obtainRotationPoint(Point center, Point source, float degree) {
         /**
@@ -360,12 +500,12 @@ public class SingleTouchView extends View {
 
         return result;
     }
+
     /**
      * 根据位置判断控制图标处于那个点
-     * @return
      */
-    private Point LocationToPoint(int location){
-        switch(location){
+    private Point LocationToPoint(int location) {
+        switch (location) {
             case LEFT_TOP:
                 return mLTPoint;
             case RIGHT_TOP:
@@ -377,24 +517,194 @@ public class SingleTouchView extends View {
         }
         return mLTPoint;
     }
+
+    /**
+     * 根据点击的位置判断是否点中控制旋转，缩放的图片， 初略的计算
+     */
+    private int judgeStatus(float x, float y) {
+        PointF touchPoint = new PointF(x, y);
+        PointF controlPointF = new PointF(mControlPoint);
+
+        //点击的点到控制旋转，缩放点的距离
+        float distanceToControl = distance4PointF(touchPoint, controlPointF);
+
+        //如果两者之间的距离小于 控制图标的宽度，高度的最小值，则认为点中了控制图标
+        if (distanceToControl < Math.min(mDrawableWidth / 2, mDrawableHeight / 2)) {
+            return STATUS_ROTATE_ZOOM;
+        }
+
+        return STATUS_DRAG;
+    }
+
+    /**
+     * 两个 PointF 点之间的距离
+     */
+    private float distance4PointF(PointF pf1, PointF pf2) {
+        float disX = pf2.x - pf1.x;
+        float disY = pf2.y - pf1.y;
+        return PointF.length(disX, disY);
+    }
+
+    /**
+     * 设置旋转图
+     */
+    public void setImageBitmap(Bitmap bitmap) {
+        this.mBitmap = bitmap;
+        transformDraw();
+    }
+
+
+    /**
+     * 设置旋转图
+     */
+    public void setImageDrawable(Drawable drawable) {
+        this.mBitmap = drawable2Bitmap(drawable);
+        transformDraw();
+    }
+
+    /**
+     * 根据id设置旋转图
+     */
+    public void setImageResource(int resId) {
+        Drawable drawable = getContext().getResources().getDrawable(resId);
+        setImageDrawable(drawable);
+    }
+
+    public float getImageDegree() {
+        return mDegree;
+    }
+
+    /**
+     * 设置图片旋转角度
+     */
+    public void setImageDegree(float degree) {
+        if (this.mDegree != degree) {
+            this.mDegree = degree;
+            transformDraw();
+        }
+    }
+
+    public float getImageScale() {
+        return mScale;
+    }
+
+    /**
+     * 设置图片缩放比例
+     */
+    public void setImageScale(float scale) {
+        if (this.mScale != scale) {
+            this.mScale = scale;
+            transformDraw();
+        }
+    }
+
+    public Drawable getControlDrawable() {
+        return controlDrawable;
+    }
+
+    /**
+     * 设置控制图标
+     */
+    public void setControlDrawable(Drawable drawable) {
+        if (drawable == null) return;
+        this.controlDrawable = drawable;
+        mDrawableWidth = drawable.getIntrinsicWidth();
+        mDrawableHeight = drawable.getIntrinsicHeight();
+        transformDraw();
+    }
+
+    public int getFrameColor() {
+        return frameColor;
+    }
+
+    public int getFramePadding() {
+        return framePadding;
+    }
+
+    public void setFramePadding(int framePadding) {
+        if (this.framePadding != framePadding) {
+            this.framePadding = (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, framePadding, metrics);
+            transformDraw();
+        }
+    }
+
+    public void setFrameColor(int frameColor) {
+        if (this.frameColor != frameColor) {
+            this.frameColor = frameColor;
+            mPaint.setColor(frameColor);
+            invalidate();
+        }
+    }
+
+    public int getFrameWidth() {
+        return frameWidth;
+    }
+
+    public void setFrameWidth(int frameWidth) {
+        if (this.frameWidth != frameWidth) {
+            this.frameWidth = (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, frameWidth, metrics);
+            mPaint.setStrokeWidth(frameWidth);
+            invalidate();
+        }
+    }
+
+    /**
+     * 设置控制图标的位置, 设置的值只能选择LEFT_TOP ，RIGHT_TOP， RIGHT_BOTTOM，LEFT_BOTTOM
+     */
+    public void setControlLocation(int location) {
+        if (this.controlLocation != location) {
+            this.controlLocation = location;
+            transformDraw();
+        }
+    }
+
+    public int getControlLocation() {
+        return controlLocation;
+    }
+
+    public PointF getCenterPoint() {
+        return mCenterPoint;
+    }
+
+    /**
+     * 设置图片中心点位置，相对于父布局而言
+     */
+    public void setCenterPoint(PointF mCenterPoint) {
+        this.mCenterPoint = mCenterPoint;
+        adjustLayout();
+    }
+
+    public boolean isEditable() {
+        return isEditable;
+    }
+
+    @Override
+    public CharSequence getContentDescription() {
+        return super.getContentDescription();
+    }
+
+    /**
+     * 设置是否处于可缩放，平移，旋转状态
+     */
+    public void setEditable(boolean isEditable) {
+        this.isEditable = isEditable;
+        invalidate();
+    }
+
     /**
      * 获取变长参数最大的值
-     * @param array
-     * @return
      */
-    public int getMaxValue(Integer...array){
+    public int getMaxValue(Integer... array) {
         List<Integer> list = Arrays.asList(array);
         Collections.sort(list);
-        return list.get(list.size() -1);
+        return list.get(list.size() - 1);
     }
 
 
     /**
      * 获取变长参数最大的值
-     * @param array
-     * @return
      */
-    public int getMinValue(Integer...array){
+    public int getMinValue(Integer... array) {
         List<Integer> list = Arrays.asList(array);
         Collections.sort(list);
         return list.get(0);
